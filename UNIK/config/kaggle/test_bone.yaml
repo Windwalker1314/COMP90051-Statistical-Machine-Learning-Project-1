@@ -1,0 +1,24 @@
+# feeder
+feeder: feeders.feeder.Feeder
+test_feeder_args:
+  data_path: ./data/kaggle/xsub/test_data_bone.npy
+  label_path: ./data/kaggle/xsub/test_label.pkl
+  debug: False
+
+# model
+model: model.backbone_unik.UNIK
+model_args:
+  num_class: 49
+  num_joints: 20
+  num_person: 2
+  in_channels: 3
+  num_heads: 4
+  
+# test
+phase: test
+device: [6]
+test_batch_size: 64
+weights: ./runs/kaggle/bone-53-14202.pt
+work_dir: ./work_dir/kaggle/xsub/unik_test_bone
+model_saved_name: ./runs/kaggle/bone_test
+save_score: True
