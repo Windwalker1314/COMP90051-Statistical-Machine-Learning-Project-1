@@ -58,18 +58,18 @@ def pre_normalization(data, zaxis=[3, 1], xaxis=[9,5]):
                         s[i_s, i_p, i_f:] = pad
                         break
 
-    print('sub the center joint #3 (spine joint in ntu and neck joint in kinetics)')
+    print('sub the center joint #2 (spine joint in ntu and neck joint in kinetics)')
     for i_s, skeleton in enumerate(tqdm(s)):
         if skeleton.sum() == 0:
             continue
-        main_body_center2 = np.tile(skeleton[0][0, 3:4, :],(T,1,1)).copy()
+        main_body_center2 = np.tile(skeleton[0][0, 2:3, :],(T,1,1)).copy()
         for i_p, person in enumerate(skeleton):
             if person.sum() == 0:
                 continue
             mask = (person.sum(-1) != 0).reshape(T, V, 1)
             s[i_s, i_p] = (s[i_s, i_p] - main_body_center2) * mask
 
-    print('parallel the bone between hip(jpt 4) and spine(jpt 2) of the first person to the z axis')
+    print('parallel the bone between hip(jpt 1) and spine(jpt 3) of the first person to the z axis')
     for i_s, skeleton in enumerate(tqdm(s)):
         if skeleton.sum() == 0:
             continue
@@ -88,7 +88,7 @@ def pre_normalization(data, zaxis=[3, 1], xaxis=[9,5]):
                     s[i_s, i_p, i_f, i_j] = np.dot(matrix_z, joint)
 
     print(
-        'parallel the bone between right shoulder(jpt 5) and left shoulder(jpt 6) of the first person to the x axis')
+        'parallel the bone between right shoulder(jpt 9) and left shoulder(jpt 5) of the first person to the x axis')
     for i_s, skeleton in enumerate(tqdm(s)):
         if skeleton.sum() == 0:
             continue
