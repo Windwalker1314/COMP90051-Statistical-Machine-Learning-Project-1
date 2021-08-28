@@ -33,7 +33,7 @@ def pre_normalization2d(data, zaxis=[0, 3], xaxis=[5, 6]):
     data = np.transpose(s, [0, 4, 2, 3, 1])
     return data
 
-def pre_normalization(data, zaxis=[2, 4], xaxis=[5, 6]):
+def pre_normalization(data, zaxis=[3, 1], xaxis=[9,5]):
     N, C, T, V, M = data.shape
     s = np.transpose(data, [0, 4, 2, 3, 1])  # N, C, T, V, M  to  N, M, T, V, C
 
