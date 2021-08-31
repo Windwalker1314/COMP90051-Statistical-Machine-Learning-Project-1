@@ -1,0 +1,24 @@
+# feeder
+feeder: feeders.feeder.Feeder
+test_feeder_args:
+  data_path: ./data/kaggle/test_data_joint.npy
+  label_path: ./data/kaggle/test_label.pkl
+  debug: False
+
+# model
+model: model.backbone_unik.UNIK
+model_args:
+  num_class: 49
+  num_joints: 20
+  num_person: 1
+  in_channels: 3
+  num_heads: 4
+  
+# test
+phase: test
+device: [5]
+test_batch_size: 128
+weights: ./runs/kaggle/joint-41-6090.pt
+work_dir: ./work_dir/kaggle/unik_test_joint
+model_saved_name: ./runs/test
+save_score: True

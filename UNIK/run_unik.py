@@ -8,8 +8,8 @@ import pickle
 import random
 import shutil
 import time
-from collections import OrderedDict
-
+from collections import OrderedDict, Counter
+import wandb
 import numpy as np
 # torch
 import torch
@@ -22,6 +22,10 @@ from torch.autograd import Variable
 from torch.optim.lr_scheduler import _LRScheduler
 from tqdm import tqdm
 import math
+import adabound
+from torchsampler import ImbalancedDatasetSampler
+wandb.login()
+wandb.init(project='Skeleton', entity='haonanl5')
 
 class GradualWarmupScheduler(_LRScheduler):
     def __init__(self, optimizer, total_epoch, after_scheduler=None):
@@ -44,11 +48,11 @@ class GradualWarmupScheduler(_LRScheduler):
             return super(GradualWarmupScheduler, self).step(epoch)
 
 
-def init_seed(_):
-    torch.cuda.manual_seed_all(1)
-    torch.manual_seed(1)
-    np.random.seed(1)
-    random.seed(1)
+def init_seed(seed):
+    torch.cuda.manual_seed_all(seed)
+    torch.manual_seed(seed)
+    np.random.seed(seed)
+    random.seed(seed)
     # torch.backends.cudnn.enabled = False
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
@@ -80,7 +84,7 @@ def get_parser():
 
     # visulize and debug
     parser.add_argument(
-        '--seed', type=int, default=1, help='random seed for pytorch')
+        '--seed', type=int, default=42, help='random seed for pytorch')
     parser.add_argument(
         '--log-interval',
         type=int,
@@ -213,14 +217,26 @@ class Processor():
     def load_data(self):
         Feeder = import_class(self.arg.feeder)
         self.data_loader = dict()
+
+        # train_label = []
+        # for idx in range(len(train_dataset)):
+        #     data_numpy, label, i = train_dataset[idx]
+        #     train_label.append(label)
+        # label_count =  list(Counter(train_label).values())
+        # weights = 1 / torch.Tensor(label_count)
+        # sampler = torch.utils.data.sampler.WeightedRandomSampler(weights, self.arg.batch_size)
+
         if self.arg.phase == 'train':
+            train_dataset = Feeder(**self.arg.train_feeder_args)
             self.data_loader['train'] = torch.utils.data.DataLoader(
-                dataset=Feeder(**self.arg.train_feeder_args),
+                dataset=train_dataset,
                 batch_size=self.arg.batch_size,
-                shuffle=True,
+                shuffle=False,
                 num_workers=self.arg.num_worker,
                 drop_last=True,
-                worker_init_fn=init_seed)
+                worker_init_fn=init_seed,
+                sampler=ImbalancedDatasetSampler(train_dataset)
+                )
         self.data_loader['test'] = torch.utils.data.DataLoader(
             dataset=Feeder(**self.arg.test_feeder_args),
             batch_size=self.arg.test_batch_size,
@@ -237,6 +253,7 @@ class Processor():
         print(Model)
         self.model = Model(**self.arg.model_args).cuda(output_device)
         #print(self.model)
+        # self.loss = nn.CrossEntropyLoss(weight= torch.tensor([1/10]*9+[2/10]*11+[3/10]*10+[4/10]*10+[1/2]*9)).cuda(output_device)
         self.loss = nn.CrossEntropyLoss().cuda(output_device)
 
         if self.arg.weights:
@@ -292,6 +309,12 @@ class Processor():
                 self.model.parameters(),
                 lr=self.arg.base_lr,
                 weight_decay=self.arg.weight_decay)
+        elif self.arg.optimizer == 'AdaBound':
+            self.optimizer = adabound.AdaBound(
+                self.model.parameters(),
+                lr=self.arg.base_lr,
+                weight_decay=self.arg.weight_decay,
+                final_lr=0.1)
         else:
             raise ValueError()
 
@@ -311,17 +334,14 @@ class Processor():
             yaml.dump(arg_dict, f)
 
     def adjust_learning_rate(self, epoch):
-        if self.arg.optimizer == 'SGD' or self.arg.optimizer == 'Adam':
-            if epoch < self.arg.warm_up_epoch:
-                lr = self.arg.base_lr * (epoch + 1) / self.arg.warm_up_epoch
-            else:
-                lr = self.arg.base_lr * (
-                        0.1 ** np.sum(epoch >= np.array(self.arg.step)))
-            for param_group in self.optimizer.param_groups:
-                param_group['lr'] = lr
-            return lr
+        if epoch < self.arg.warm_up_epoch:
+            lr = self.arg.base_lr * (epoch + 1) / self.arg.warm_up_epoch
         else:
-            raise ValueError()
+            lr = self.arg.base_lr * (
+                    0.1 ** np.sum(epoch >= np.array(self.arg.step)))
+        for param_group in self.optimizer.param_groups:
+            param_group['lr'] = lr
+        return lr
 
     def print_time(self):
         localtime = time.asctime(time.localtime(time.time()))
@@ -390,6 +410,7 @@ class Processor():
                 l1 = 0
             loss = self.loss(output, label) + l1
 
+
             # backward
             self.optimizer.zero_grad()
             loss.backward()
@@ -402,8 +423,9 @@ class Processor():
             self.train_writer.add_scalar('acc', acc, self.global_step)
             self.train_writer.add_scalar('loss', loss.data.item(), self.global_step)
             self.train_writer.add_scalar('loss_l1', l1, self.global_step)
+            wandb.log({f"train batch loss":loss.data.item()})
+            wandb.log({f"train batch acc":acc})
             # self.train_writer.add_scalar('batch_time', process.iterable.last_duration, self.global_step)
-
             # statistics
             self.lr = self.optimizer.param_groups[0]['lr']
             self.train_writer.add_scalar('lr', self.lr, self.global_step)
@@ -423,6 +445,8 @@ class Processor():
         self.print_log(
             '\tTime consumption: [Data]{dataloader}, [Network]{model}'.format(
                 **proportion))
+
+        wandb.log({f"train loss":np.mean(loss_value)})
 
         if save_model:
             state_dict = self.model.state_dict()
@@ -451,12 +475,10 @@ class Processor():
                 with torch.no_grad():
                     data = Variable(
                         data.float().cuda(self.output_device),
-                        requires_grad=False,
-                        volatile=True)
+                        requires_grad=False)
                     label = Variable(
                         label.long().cuda(self.output_device),
-                        requires_grad=False,
-                        volatile=True)
+                        requires_grad=False)
                     output = self.model(data)
                     if isinstance(output, tuple):
                         output, l1 = output
@@ -475,15 +497,17 @@ class Processor():
                     true = list(label.data.cpu().numpy())
                     for i, x in enumerate(predict):
                         if result_file is not None:
-                            f_r.write( str(index[i]) + ',' + str(int(x)+1) + '\n')
-                        if x != true[i] and wrong_file is not None:
-                            f_w.write(str(index[i]) + ',' + str(x) + ',' + str(true[i]) + '\n')
+                            f_r.write( str(int(index[i])) + ',' + str(int(x)+1) + '\n')
+                        if wrong_file is not None:
+                            f_w.write(str(x) + ',' + str(true[i]) + '\n')
             score = np.concatenate(score_frag)
             loss = np.mean(loss_value)
             accuracy = self.data_loader[ln].dataset.top_k(score, 1)
             if accuracy > self.best_acc:
                 self.best_acc = accuracy
             # self.lr_scheduler.step(loss)
+            wandb.log({f"test loss":loss})
+            wandb.log({f"test acc":accuracy})
             print('Accuracy: ', accuracy, ' model: ', self.arg.model_saved_name)
             if self.arg.phase == 'train':
                 self.val_writer.add_scalar('loss', loss, self.global_step)
@@ -570,6 +594,6 @@ if __name__ == '__main__':
         parser.set_defaults(**default_arg)
 
     arg = parser.parse_args()
-    init_seed(0)
+    init_seed(arg.seed)
     processor = Processor(arg)
     processor.start()

@@ -13,12 +13,12 @@ class Feeder(Dataset):
                  random_choose=False, random_crop=False, random_shift=False, random_move=False,
                  window_size=-1, normalization=False, debug=False, use_mmap=True, sphere=False):
         """
-        
-        :param data_path: 
-        :param label_path: 
+
+        :param data_path:
+        :param label_path:
         :param random_choose: If true, randomly choose a portion of the input sequence
         :param random_shift: If true, randomly pad zeros at the begining or end of sequence
-        :param random_move: 
+        :param random_move:
         :param window_size: The length of the output sequence
         :param normalization: If true, normalize input sequence
         :param debug: If true, only use the first 100 samples
@@ -61,6 +61,8 @@ class Feeder(Dataset):
             self.data = self.data[0:100]
             self.sample_name = self.sample_name[0:100]
 
+    def get_labels(self): return self.label
+
     def get_mean_map(self):
         data = self.data
         N, C, T, V, M = data.shape
@@ -77,11 +79,11 @@ class Feeder(Dataset):
         data_numpy = self.data[index]
         label = self.label[index]
         data_numpy = np.array(data_numpy)
-               
+
         # people
-        if data_numpy.shape[3]==1:
-            data_numpy = np.concatenate((data_numpy[:,:,:,:], np.zeros((data_numpy.shape))), axis=3)
-        
+        # if data_numpy.shape[3]==1:
+        #    data_numpy = np.concatenate((data_numpy[:,:,:,:], np.zeros((data_numpy.shape))), axis=3)
+
         if self.normalization:
             data_numpy = (data_numpy - self.mean_map) / self.std_map
         if self.random_shift:
@@ -92,7 +94,7 @@ class Feeder(Dataset):
             data_numpy = tools.auto_pading(data_numpy, self.window_size)
         if self.random_move:
             data_numpy = tools.random_move(data_numpy)
-        
+
         return data_numpy, label, index
 
     def top_k(self, score, top_k):
@@ -112,12 +114,12 @@ def import_class(name):
 def test(data_path, label_path, vid=None, graph=None, is_3d=False):
     '''
     vis the samples using matplotlib
-    :param data_path: 
-    :param label_path: 
+    :param data_path:
+    :param label_path:
     :param vid: the id of sample
-    :param graph: 
+    :param graph:
     :param is_3d: when vis NTU, set it True
-    :return: 
+    :return:
     '''
     import matplotlib.pyplot as plt
     loader = torch.utils.data.DataLoader(
