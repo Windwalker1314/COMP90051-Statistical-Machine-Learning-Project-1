@@ -12,13 +12,13 @@ model_args:
   num_joints: 20
   num_person: 1
   in_channels: 3
-  num_heads: 4
+  num_heads: 3
   
 # test
 phase: test
 device: [5]
 test_batch_size: 64
-weights: ./runs/kaggle/joint-41-6090.pt
+weights: ./runs/kaggle/joint-39-5800.pt
 work_dir: ./work_dir/unik_test_joint
 model_saved_name: ./runs/val_res
 save_score: True

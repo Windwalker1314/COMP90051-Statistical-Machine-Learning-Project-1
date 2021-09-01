@@ -231,11 +231,11 @@ class Processor():
             self.data_loader['train'] = torch.utils.data.DataLoader(
                 dataset=train_dataset,
                 batch_size=self.arg.batch_size,
-                shuffle=False,
+                shuffle=True,
                 num_workers=self.arg.num_worker,
                 drop_last=True,
                 worker_init_fn=init_seed,
-                sampler=ImbalancedDatasetSampler(train_dataset)
+                # sampler=ImbalancedDatasetSampler(train_dataset)
                 )
         self.data_loader['test'] = torch.utils.data.DataLoader(
             dataset=Feeder(**self.arg.test_feeder_args),

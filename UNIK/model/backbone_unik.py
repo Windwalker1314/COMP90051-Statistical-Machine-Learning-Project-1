@@ -32,70 +32,42 @@ def bn_init(bn, scale):
     nn.init.constant_(bn.weight, scale)
     nn.init.constant_(bn.bias, 0)
 
-class UnfoldTemporalWindows(nn.Module):
-    def __init__(self, window_size, window_stride=1, window_dilation=1):
-        super().__init__()
-        self.window_size = window_size
-        self.window_stride = window_stride
-        self.window_dilation = window_dilation
-
-        self.padding = (window_size + (window_size-1) * (window_dilation-1) - 1) // 2
-        self.unfold = nn.Unfold(kernel_size=(self.window_size, 1),
-                                dilation=(self.window_dilation, 1),
-                                stride=(self.window_stride, 1),
-                                padding=(self.padding, 0))
-
-    def forward(self, x):
-        # Input shape: (N,C,T,V), out: (N,C,T,V*tau)
-        N, C, T, V = x.shape
-        x = self.unfold(x)
-        x = x.view(N, C, self.window_size, -1, V).permute(0,1,3,2,4).contiguous()
-        x = x.view(N, C, -1, self.window_size * V)
-        return x
-
-
 # Temporal unit
 class T_LSU(nn.Module):
     def __init__(self, in_channels, out_channels, kernel_size=9, stride=1, dilation=1, autopad=True):
         super(T_LSU, self).__init__()
+
+        self.bn = nn.BatchNorm2d(out_channels)
+        self.relu = nn.ReLU()
+        bn_init(self.bn, 1)
         if autopad:
             pad = int(( kernel_size - 1) * dilation // 2)
         else:
             pad = 0
-
         self.conv = nn.Conv2d(in_channels, out_channels, kernel_size=(kernel_size, 1), padding=(pad, 0),
                               stride=(stride, 1), dilation=(dilation, 1))
-
-        self.bn = nn.BatchNorm2d(out_channels)
-        self.relu = nn.ReLU()
         conv_init(self.conv)
-        bn_init(self.bn, 1)
 
     def forward(self, x):
-        x = self.bn(self.conv(x))
-        return x
+        conv_part = self.bn(self.conv(x))
+        return conv_part
 
 # Spatial unit
 class S_LSU(nn.Module):
-    def __init__(self, in_channels, out_channels, num_joints, tau=1, num_heads=8, coff_embedding=4, bias=True):
+    def __init__(self, in_channels, out_channels, num_joints, num_heads=8, coff_embedding=4, bias=True):
         super(S_LSU, self).__init__()
         inter_channels = out_channels // coff_embedding
+        self.dropout = nn.Dropout(0.3)
         self.inter_c = inter_channels
         self.out_channels = out_channels
-        self.tau = tau
         self.num_heads = num_heads
-        self.DepM = nn.Parameter(torch.Tensor(num_heads, num_joints*tau, num_joints*tau))
+        self.DepM = nn.Parameter(torch.Tensor(num_heads, num_joints, num_joints))
         if bias:
-            self.bias = nn.Parameter(torch.Tensor(num_joints*tau))
+            self.bias = nn.Parameter(torch.Tensor(num_joints))
         else:
             self.register_parameter('bias', None)
         self.reset_parameters()
 
-        # Temporal window
-        if tau != 1:
-            self.tw = UnfoldTemporalWindows(window_size=tau, window_stride=1, window_dilation=1)
-            self.out_conv = nn.Conv3d(out_channels, out_channels, kernel_size=(1, tau, 1))
-            self.out_bn = nn.BatchNorm2d(out_channels)
         # Attention
         self.conv_a = nn.ModuleList()
         self.conv_b = nn.ModuleList()
@@ -136,8 +108,6 @@ class S_LSU(nn.Module):
 
 
     def forward(self, x):
-        if self.tau != 1:
-            x = self.tw(x)
         N, C, T, V = x.size()
 
         W = self.DepM
@@ -156,22 +126,14 @@ class S_LSU(nn.Module):
 
         y = self.bn(y)
         y += self.down(x)
-
-        if self.tau == 1:
-            return self.relu(y).view(N, -1, T, V)
-        else:
-            y = self.relu(y)
-            y = y.view(N, self.out_channels, -1, self.tau, V // self.tau)
-            y = self.out_conv(y).squeeze(dim=3)
-            y = self.out_bn(y)
-            return y
+        return self.relu(y).view(N, -1, T, V)
 
 
 
 class ST_block(nn.Module):
-    def __init__(self, in_channels, out_channels, num_joints=25, tau=1, num_heads=3, stride=1, dilation=1, autopad=True, residual=True):
+    def __init__(self, in_channels, out_channels, num_joints=25, num_heads=3, stride=1, dilation=1, autopad=True, residual=True):
         super(ST_block, self).__init__()
-        self.s_unit = S_LSU(in_channels, out_channels, num_joints, tau, num_heads)
+        self.s_unit = S_LSU(in_channels, out_channels, num_joints, num_heads)
         self.t_unit = T_LSU(out_channels, out_channels, stride=stride, dilation=dilation, autopad=autopad)
         self.relu = nn.ReLU()
         self.dropout = nn.Dropout(0.3)
@@ -189,41 +151,45 @@ class ST_block(nn.Module):
             self.residual = T_LSU(in_channels, out_channels, kernel_size=1, stride=stride)
 
     def forward(self, x):
-        x = self.dropout(self.t_unit(self.dropout(self.s_unit(x))) + self.residual(x[:, :, self.pad : x.shape[2] - self.pad, :]))
+        s_out = self.dropout(self.s_unit(x))
+        x = self.dropout(self.t_unit(s_out) + self.residual(x[:, :, self.pad : x.shape[2] - self.pad, :]))
         return self.relu(x)
 
 
 class UNIK(nn.Module):
-    def __init__(self, num_class=60, num_joints=25, num_person=2, tau=1, num_heads=3, in_channels=2):
+    def __init__(self, num_class=60, num_joints=20, num_person=1, num_heads=3, in_channels=3):
         super(UNIK, self).__init__()
 
-        self.tau = tau
-        self.data_bn = nn.BatchNorm1d(num_person * in_channels * num_joints)
-
-        self.l1 = ST_block(in_channels, 64, num_joints, tau, residual=False)
-
-        self.l2 = ST_block(64, 64, num_joints, tau, num_heads, dilation=1) #3
-        self.l3 = ST_block(64, 64, num_joints, tau, num_heads, dilation=1)  #3
-        self.l4 = ST_block(64, 64, num_joints, tau, num_heads, dilation=1)   #3
-
-        self.l5 = ST_block(64, 128, num_joints, tau, num_heads, stride=2)
-        self.l6 = ST_block(128, 128, num_joints, tau, num_heads)
-        self.l7 = ST_block(128, 128, num_joints, tau, num_heads)
-
-        self.l8 = ST_block(128, 256, num_joints, tau, num_heads, stride=2)
-        self.l9 = ST_block(256, 256, num_joints, tau, num_heads)
-        self.l10 = ST_block(256, 256, num_joints, tau, num_heads)
+        self.relu = nn.ReLU()
         self.dropout = nn.Dropout(0.2)
-        self.fc = nn.Linear(256, num_class)
+        self.data_bn = nn.BatchNorm1d(in_channels * num_joints)
+
+        self.l1 = ST_block(in_channels, 64, num_joints, residual=False)
+
+        self.l2 = ST_block(64, 64, num_joints, num_heads, dilation=1) #3
+        self.l3 = ST_block(64, 64, num_joints, num_heads, dilation=1)  #3
+        self.l4 = ST_block(64, 64, num_joints, num_heads, dilation=1)   #3
+
+        self.l5 = ST_block(64, 128, num_joints, num_heads, stride=2)
+        self.l6 = ST_block(128, 128, num_joints, num_heads)
+        self.l7 = ST_block(128, 128, num_joints, num_heads)
+
+        self.l8 = ST_block(128, 256, num_joints, num_heads, stride=2)
+        self.l9 = ST_block(256, 256, num_joints, num_heads)
+        self.l10 = ST_block(256, 256, num_joints, num_heads)
+        self.l11 = ST_block(256, 128, num_joints, num_heads)
+        self.dropout = nn.Dropout(0.2)
+        self.fc = nn.Linear(128, num_class)
         nn.init.normal_(self.fc.weight, 0, math.sqrt(2. / num_class))
         bn_init(self.data_bn, 1)
 
     def forward(self, x):
-        N, C, T, V, M = x.size()
+        N, C, T, V, M = x.size() #64 3 16 20 1
+        x = x.squeeze(-1)
 
-        x = x.permute(0, 4, 3, 1, 2).contiguous().view(N, M * V * C, T)
+        x = x.permute(0, 3, 1, 2).contiguous().view(N, V * C, T)
         x = self.data_bn(x)
-        x = x.view(N, M, V, C, T).permute(0, 1, 3, 4, 2).contiguous().view(N * M, C, T, V)
+        x = x.view(N, V, C, T).permute(0, 2, 3, 1).contiguous().view(N, C, T, V)
 
         x = self.l1(x)
         #x = self.l2(x)
@@ -235,9 +201,11 @@ class UNIK(nn.Module):
         x = self.l8(x)
         #x = self.l9(x)
         #x = self.l10(x)
+        x = self.l11(x)
 
-        c_new = x.size(1)
-        x = x.view(N, M, c_new, -1)
-        x = x.mean(3).mean(1)
+        x = x.view(N, x.size(1), -1)
+        x = x.mean(-1)
 
-        return self.fc(x)
+        x = self.fc(x)
+
+        return x
